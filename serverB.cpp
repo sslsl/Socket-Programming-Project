@@ -1,279 +1,258 @@
+#include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
-#include <iostream>
 #include <unistd.h>
-#include <vector>
-#include <cstdlib>
-#include <map>
-#include <errno.h>
-#include <string.h>
+#include <string>
+#include <cstring>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>
 #include <netdb.h>
-#include <float.h>
-#include <sys/wait.h>
-#include <signal.h>
-#include <sys/time.h>
-#include <fstream>
-#include <string>
-#include <regex>
-#include <limits.h>
-#include <stack>
-#include <list>
-#include <unordered_set>
-#include <queue>
+#include <arpa/inet.h>
+#include <iomanip>
+#include <vector>
 
-#define PORTB "22595" 
-#define AWSPORT "24595"   //aws TCP port
-#define UDPPORT "23595"     //UDP port
-#define MAXBUFLEN 100
-#define HOST "localhost"
-// get sockaddr, IPv4 or IPv6:
+//#include "serverB.h"
+using namespace std;
 
-//beej
-void sigchld_handler(int s)
-{
-    // waitpid() might overwrite errno, so we save and restore it:
-    int saved_errno = errno;
-    while(waitpid(-1, NULL, WNOHANG) > 0);
-    errno = saved_errno;
+#define LOCALIP "127.0.0.1" // IP Address of Host
+#define UDPPORT 23984 // UDP Port # backend servers connects to
+#define SERVERBPORT 22984
+#define BUFLEN 1000 // Length of socket stream buffer
+
+char buf [BUFLEN];
+char mapID [BUFLEN];
+char vertexIndex[BUFLEN];
+char fileSizeBuf[BUFLEN]; // in bits
+int recvLen1;
+int sendLen;
+char pSpeedBuf[BUFLEN]; // propagation speed
+char tSpeedBuf[BUFLEN]; // transmission speed
+double propSpeed; // in km/s
+double transSpeed; // in Bytes/s
+long long fileSize;
+vector<double> propDelay;
+double transDelay;
+vector<double> totDelay;
+
+vector< pair <int, int> > shortestPathPairs; // (node, distance (km)) in ascending distance order
+vector< pair <int, double> > totalDelayPairs; // (node, delay (sec)) in ascending delay order
+
+struct sockaddr_in awsAddrUDP;
+
+struct sockaddr_in serverBAddr;
+int serverB_sockfd;
+
+
+void init_UDP(){
+    // *** 1. CREATE SOCKET ***
+    if ( (serverB_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ){
+        perror("Error creating UDP socket");
+        exit(EXIT_FAILURE);
+    }
+    
+    // specify serverB address
+    
+    serverBAddr.sin_family = AF_INET;
+    //AWS Port #
+    serverBAddr.sin_port = htons(SERVERBPORT);
+    //AWS IP ADDR - INADDR_LOOPBACK refers to localhost ("127.0.0.1")
+    serverBAddr.sin_addr.s_addr = inet_addr(LOCALIP);
+    
+    // *** 2. BIND SOCKET ***
+    
+    if (::bind(serverB_sockfd, (struct sockaddr *) &serverBAddr, sizeof(serverBAddr)) == -1 ){
+        close(serverB_sockfd);
+        perror("Error binding UDP socket");
+        exit(EXIT_FAILURE);
+    }
+    
+    cout << "The Server B is up and running using UDP on port " << SERVERBPORT << "." << endl;
 }
 
-void *get_in_addr(struct sockaddr *sa)
-{
-	if (sa->sa_family == AF_INET) {
-		return &(((struct sockaddr_in*)sa)->sin_addr);
-	}
-	return &(((struct sockaddr_in6*)sa)->sin6_addr);
-}
 
-
-typedef struct p2p{
-    int begin_p;
-    int end_p;
-    double p2p_weight;
-
-}p2p_dist;
-
-class Cmap{
-
-public:
-    char map_id;
-    double prop_speed;
-    double tran_speed;
-
-    //double ** graphmatrix;
-    unordered_set<int> points;
-    vector<p2p_dist> weight;
-    int point_count;
-    vector<vector<double>> adjMatrix;
-
-    Cmap(){};
-    ~Cmap(){};
-    Cmap(char id, double prop, double tran):map_id(id), prop_speed(prop), tran_speed(tran){}
-
-    // construct adjacency Matrix
-    void creatGraph()
-    {
-        point_count = points.size();
-        adjMatrix.reserve(point_count);
-        for(int i=0; i<point_count; i++)
-        {
-            adjMatrix.emplace_back(point_count, 0);
-        }
-        for(auto p : weight)
-        {
-            adjMatrix[p.begin_p][p.end_p] = p.p2p_weight;
-            adjMatrix[p.end_p][p.begin_p] = p.p2p_weight;
-        }
-    }
-
-    //find shortest paths
-    typedef pair<int, int> pValue;
-    vector<double> Dijkstra(int src)
-    {
-        vector<double> shortestPath(point_count, DBL_MAX);
-        shortestPath[src] = 0;
-        unordered_set<int> visited;
-        priority_queue<pValue, vector<pValue>, greater<pValue>> pq;
-        pq.emplace(0, src);
-        while(!pq.empty())
-        {
-            int p = pq.top().second;
-            pq.pop();
-            if(visited.count(p)) continue;
-            visited.insert(p);
-
-            for(int i=0; i<point_count; i++)
-            {
-                if(adjMatrix[p][i] != 0)
-                {
-                    if(shortestPath[i] > shortestPath[p] + adjMatrix[p][i])
-                    {
-                        shortestPath[i] = shortestPath[p] + adjMatrix[p][i];
-                        pq.emplace(shortestPath[i], i);
-                    }
-                }
-            }
-        }
-        return shortestPath;
-    }
-	vector<double> delay(vector<double> shortestPath){
-		double File_size;
-        vector<double> Tp;
-        vector<double> Tt;
-        vector<double> delay;
-        for (int i = 0; i < shortestPath.size(); i++){
-            Tp.push_back((double)prop_speed*shortestPath[i]);
-            Tt.push_back((double)tran_speed*shortestPath[i]);
-            for (int j = 0; j<shortestPath.size();j++){
-                delay.push_back((double)Tp[j]+(double)Tt[j]);
-            }
-
-        }
-        return delay;
-    }
-};
-
-
-int main(int argc,char const *argv[])
-{
-	int Num_Vertics,Num_Edges;
-	char Map_ID;
-    string file_txt = "map.txt";
-    string buffer;
-    vector <string> vs;
-    vector <Cmap*> map_list;
-    int map_num=0;
-
-
-//******push all string**********
-    ifstream inFile(file_txt, ios::in);
-    while(getline(inFile, buffer))
-    {
-        vs.push_back(buffer);
-        if(buffer.length() == 2)  map_num+=1;
-    }
-    inFile.close();
+void recvFromAWS(){
+    char destBuf[BUFLEN];
+    char lenBuf[BUFLEN];
+    socklen_t awsLen = sizeof(awsAddrUDP);
+    memset(buf, '0', sizeof(buf));
+    memset(fileSizeBuf, '\0' , sizeof(fileSizeBuf));
+    int recvDone = 0; // 0 = not finished receiving, 1 = finished receiving
     
-
-//*******Create Cmap*********
-    
-    vector<string>::iterator it;
-    /*
-    for(int i=0;i<map_num;i++)
-    {
-        Cmap*  temp_map =new Cmap();
-        map_list.push_back(temp_map);
+    // Receive file size
+    if ((recvLen1 = recvfrom(serverB_sockfd, fileSizeBuf, BUFLEN, 0, (struct sockaddr *) &awsAddrUDP, &awsLen )) < 0){
+        perror("Error receiving message from aws");
+        exit(EXIT_FAILURE);
+        
     }
-    */
-    int temp_map_id=-1;
-
-    it=vs.begin();
-    while(it<vs.end())
-    {
-        buffer=*it;
-        it++;
-
-        //*********First three ID Weight1 weight2***************
-        if(buffer.length()==2)
-        {
-            temp_map_id+=1;
+    fileSizeBuf[recvLen1] = '\0';
+    
+    // Exception handling
+    // if buf == -2 then the map or source node is incorrect and server B should abort
+    if (atoi(fileSizeBuf) == -2){
+        cerr << "Received error from AWS: Map or source node invalid\n";
+        exit(EXIT_FAILURE);
+    }
+    // Overflow when filesize > 9223372036854775805
+    // if buf = -1 then filesize is too big
+    if (atoi(fileSizeBuf) == -1){
+        perror("Received error from AWS");
+        int sendLen;
+        // return error to AWS
+        if ((sendLen = sendto(serverB_sockfd, "-1", strlen("-1"), 0, (struct sockaddr *) &awsAddrUDP, sizeof(struct sockaddr_in))) == -1) {
+            perror("Error sending UDP message to AWS from Server B");
+            exit(EXIT_FAILURE);
+        }
+        
+        exit(EXIT_FAILURE);
+    }
+    
+    fileSize = atoll(fileSizeBuf);
+    
+    // Recv 1st propagation speed 2nd transmission speed
+    memset(pSpeedBuf, '\0' , sizeof(pSpeedBuf));
+    if ((recvLen1 = recvfrom(serverB_sockfd, pSpeedBuf, BUFLEN, 0, (struct sockaddr *) &awsAddrUDP, &awsLen )) < 0){
+        perror("Error receiving message from aws");
+        exit(EXIT_FAILURE);
+    }
+    pSpeedBuf[recvLen1] = '\0';
+    propSpeed = atof(pSpeedBuf);
+    
+    memset(tSpeedBuf, '\0' , sizeof(tSpeedBuf));
+    if ((recvLen1 = recvfrom(serverB_sockfd, tSpeedBuf, BUFLEN, 0, (struct sockaddr *)&awsAddrUDP, &awsLen )) < 0){
+        perror("Error receiving message from aws");
+        exit(EXIT_FAILURE);
+    }
+    tSpeedBuf[recvLen1] = '\0';
+    
+    transSpeed = atof(tSpeedBuf);
+    
+    // receive edge data
+    memset(destBuf, '\0' , sizeof(destBuf));
+    memset(lenBuf, '\0' , sizeof(lenBuf));
+    while (!recvDone){
+        
+        if ((recvLen1 = recvfrom(serverB_sockfd, destBuf, BUFLEN, 0, (struct sockaddr *) &awsAddrUDP, &awsLen )) < 0){
+            perror("Error receiving message from aws");
+            exit(EXIT_FAILURE);
+        }
+        destBuf[recvLen1] = '\0';
+//        cout << "dest: " << destBuf << endl;
+        
+        // receive min length if destination received is valid
+        if (destBuf[0] != '\0'){
+            if ((recvLen1 = recvfrom(serverB_sockfd, lenBuf, BUFLEN, 0, (struct sockaddr *)&awsAddrUDP, &awsLen )) < 0){
+                perror("Error receiving message from aws");
+                exit(EXIT_FAILURE);
+            }
+            lenBuf[recvLen1] = '\0';
+//            cout << "len: " << lenBuf << endl;
             
-            char id = buffer[0];
-            double prop = stod(*it++);
-            double tran = stod(*it++);
-            Cmap* tmp_map = new Cmap(id, prop, tran);
-            map_list.push_back(tmp_map);
-
-            //map_list[temp_map_id]->map_id=buffer[0];
-            //map_list[temp_map_id]->prop_speed= stod(*it++);
-            //map_list[temp_map_id]->tran_speed= stod(*it++);
-
-            continue;
+            shortestPathPairs.push_back(make_pair(atoi(destBuf), atoi(lenBuf)) );
         }
-
-
-        //******Add Normal Distance************
-        const char* point = buffer.c_str();
-
-        p2p_dist temp_p2p =p2p_dist();
-        sscanf(point,"%d %d %lf",&temp_p2p.begin_p, &temp_p2p.end_p,&temp_p2p.p2p_weight);
-        map_list[temp_map_id]->weight.push_back(temp_p2p);
-        map_list[temp_map_id]->points.insert(temp_p2p.begin_p);
-        map_list[temp_map_id]->points.insert(temp_p2p.end_p);
-    }
-
-    /*
-    for (int i = 0;i<map_list.size();i++){
-        for (int j = 0;j < map_list[i]->weight.size();j++){
-            cout << map_list[i]->weight.at(j).begin_p << map_list[i]->weight.at(j).end_p << map_list[i]->weight.at(j).p2p_weight<<endl;
-        }   
-    }
-    */
-    for(Cmap* map : map_list) map->creatGraph(); 
-    for(Cmap* map : map_list)
-    {
-        for(int p : map->points)
-        {
-            vector<double> res = map->Dijkstra(p);
-            for(double dist : res)
-            {
-                cout<<dist<<" ";
-            }
-            cout<<endl;
+        else{
+            //toggle recvDone
+            recvDone = 1;
         }
+        
+//        cout << recvDone << endl;
+        
+    } // end while
+    
+    
+    cout << "The Server B has received data for calculation: "<< endl;
+    cout << fixed;
+    cout << "* Propagation speed: " << setprecision(2) << propSpeed << " km/s" << endl;;
+    cout << "* Transmission speed "<< setprecision(2) << transSpeed << " Bytes/s" << endl;
+    
+    for (auto it = shortestPathPairs.begin(); it != shortestPathPairs.end(); it++){
+        cout << "* Path length for destination " << it->first << ": " << it->second << endl;
     }
-	
-	int sockfd;
-	struct addrinfo hints, *servinfo, *p;
-	int res;
-	int numbytes;
-	struct sockaddr_storage their_addr;
-	char buf[MAXBUFLEN];
-	socklen_t addr_len;
-	char s[INET6_ADDRSTRLEN];
+   
+}
 
-	memset(&hints, 0, sizeof hints);
-	hints.ai_family = AF_UNSPEC; 
-	hints.ai_socktype = SOCK_DGRAM;
-	hints.ai_flags = AI_PASSIVE; 
 
-	if ((res = getaddrinfo(HOST, UDPPORT, &hints, &servinfo)) != 0) {
-		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(res));
-		return 1;
-	}
+void calcDelay(){
+    int i = 0;
+    // convert file size in bits to bytes
+    // trans delay (same for all nodes) (seconds)
+    transDelay = fileSize / (8 * transSpeed);
+    for (auto it = shortestPathPairs.begin(); it != shortestPathPairs.end(); it++){
+        // prop delay =  (distance / propagation speed) (seconds)
+        propDelay.push_back(it->second / propSpeed);
+        
+        // total delay (transmission delay + propagation delay)
+        totDelay.push_back(propDelay[i] + transDelay);
+        
+        totalDelayPairs.push_back(make_pair(it->first, totDelay[i]));
+        i++;
+    }
+    
+    cout << "The Server B has finished the calculation of the delays: " << endl;
+    cout << "-------------------------------------" << endl << left << setw(20) << "Destination" << "Delay (sec)" << endl << "-------------------------------------" << endl;
+    
+    for(auto it = totalDelayPairs.begin(); it != totalDelayPairs.end(); it++){
+        cout << left << setw(20) << it->first << setw(20) << it->second << endl;
+    }
+    cout << "-------------------------------------" << endl;
+}
 
-	for(p = servinfo; p != NULL; p = p->ai_next) {
-		if ((sockfd = socket(p->ai_family, p->ai_socktype,p->ai_protocol)) == -1) {
-			perror("listener: socket");
-			continue;
-		}
-		if (bind(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
-			close(sockfd);
-			perror("listener: bind");
-			continue;
-		}
-		break;
-	}
-	if (p == NULL) {
-		fprintf(stderr, "listener: failed to bind socket\n");
-		return 2;
-	}
-	freeaddrinfo(servinfo);
-	printf("The server B is up and running using UDP on port %s.\n",PORTB);
-	addr_len = sizeof their_addr;
-	if ((numbytes = recvfrom(sockfd, buf, MAXBUFLEN-1 , 0,(struct sockaddr *)&their_addr, &addr_len)) == -1) {
-		perror("recvfrom");
-		exit(1);
-	}
-	printf("listener: got packet from %s\n",
-	inet_ntop(their_addr.ss_family,get_in_addr((struct sockaddr *)&their_addr), s, sizeof s));
-	printf("listener: packet is %d bytes long\n", numbytes);
-	buf[numbytes] = '\0';
-	printf("listener: packet contains \"%s\"\n", buf);
-	close(sockfd);
-	return 0;
+void sendToAWS(){
+    
+    // send delays
+    char propBuf[BUFLEN];
+    char transBuf[BUFLEN];
+    char totBuf[BUFLEN];
+    
+    // send transmission delay
+    sprintf(transBuf, "%f", transDelay);
+    if ((sendLen = sendto(serverB_sockfd, transBuf, strlen(transBuf), 0, (struct sockaddr *) &awsAddrUDP, sizeof(struct sockaddr_in))) == -1) {
+        perror("Error sending UDP message to AWS from Server B");
+        exit(EXIT_FAILURE);
+    }
+    
+    memset(transBuf, '\0', sizeof(transBuf));
+    
+    for(int i = 0; i < propDelay.size(); i++){
+        // send propagation delay
+        sprintf(propBuf, "%f", propDelay[i]);
+        if ((sendLen = sendto(serverB_sockfd, propBuf, strlen(propBuf), 0, (struct sockaddr *) &awsAddrUDP, sizeof(struct sockaddr_in))) == -1) {
+            perror("Error sending UDP message to AWS from Server B");
+            exit(EXIT_FAILURE);
+        }
+        memset(propBuf, '\0', sizeof(propBuf));
+        
+        
+        // send total delay
+        sprintf(totBuf, "%f", totDelay[i]);
+        if ((sendLen = sendto(serverB_sockfd, totBuf, strlen(totBuf), 0, (struct sockaddr *) &awsAddrUDP, sizeof(struct sockaddr_in))) == -1) {
+            perror("Error sending UDP message to AWS from Server B");
+            exit(EXIT_FAILURE);
+        }
+        memset(totBuf, '\0', sizeof(totBuf));
+    }
+    memset(buf, '\0', sizeof(buf));
+    // Send NULL char to signify end of communication
+    if ( ( sendLen = sendto(serverB_sockfd, buf, strlen(buf), 0, (struct sockaddr *) &awsAddrUDP, sizeof(struct sockaddr_in))) == -1) {
+        perror("Error sending UDP message to AWS from Server B");
+        exit(EXIT_FAILURE);
+    }
+    cout << "The Server B has finished sending the output to AWS" << endl;
+}
+
+
+int main(){   
+    init_UDP();  
+    while(1){
+        
+        recvFromAWS();
+        calcDelay();
+        sendToAWS();
+        // erase path data
+        shortestPathPairs.clear();
+        propDelay.clear();
+        totDelay.clear();
+        totalDelayPairs.clear();
+    }
+    return 0;
 }

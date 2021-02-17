@@ -1,382 +1,490 @@
+#include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
-#include <iostream>
 #include <unistd.h>
-#include <vector>
-#include <cstdlib>
-#include <map>
-#include <errno.h>
-#include <string.h>
+#include <string>
+#include <cstring>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>
 #include <netdb.h>
-#include <float.h>
-#include <sys/wait.h>
-#include <signal.h>
-#include <sys/time.h>
+#include <arpa/inet.h>
 #include <fstream>
-#include <string>
-#include <regex>
-#include <limits.h>
-#include <stack>
-#include <list>
-#include <unordered_set>
-#include <queue>
+#include <vector>
+#include <algorithm>
+#include <iomanip>
+#include <map>
+#include <climits>
 
-
-#define MAXVEX 10
-#define PORTA "21595" 
-#define AWSPORT "24595"   //aws TCP port
-#define UDPPORT "23595"     //UDP port
-#define MAXBUFLEN 100
-#define HOST "localhost"
-
+//#include "serverA.h"
 using namespace std;
 
+#define LOCALIP "127.0.0.1" // IP Address of Host
+#define UDPPORT 23984 // UDP Port # backend servers connects to
+#define SERVERAPORT 21984
+#define BUFLEN 1000 // Length of socket stream buffer
 
+char buf [BUFLEN];
+char recvMapID [BUFLEN];
+char recvVertexIndex[BUFLEN];
+char recvFileSize[BUFLEN];
+int recvLen1;
 
-typedef int previous[MAXVEX];
-typedef int shorest_distance[MAXVEX];
+struct sockaddr_in awsAddrUDP;
 
-typedef struct info{
-    int vex[MAXVEX];
-    int graphmatrix[MAXVEX][MAXVEX];
-    int numvex;
-    bool visit;
+struct sockaddr_in serverAAddr;
+int serverA_sockfd;
 
-}WHYGraph;
-
-
-//beej
-void sigchld_handler(int s)
-{
-    // waitpid() might overwrite errno, so we save and restore it:
-    int saved_errno = errno;
-    while(waitpid(-1, NULL, WNOHANG) > 0);
-    errno = saved_errno;
-}
-// get sockaddr, IPv4 or IPv6:
-void *get_in_addr(struct sockaddr *sa)
-{
-	if (sa->sa_family == AF_INET) {
-		return &(((struct sockaddr_in*)sa)->sin_addr);
-	}
-	return &(((struct sockaddr_in6*)sa)->sin6_addr);
-}
-
-
-class graph{
-
-public:
-    char map_id;
-    double prop_speed;
-    double tran_speed;
-    int weight;
-    int vex[MAXVEX];
-    int SPT[MAXVEX];
-    int graphmatrix[MAXVEX][MAXVEX];
-    int previous;
-    int num_vertices;
-    int num_edges;
-
-public:
-
-    int create_graph(int v1,int v2,int weight){
-        int i = v1;
-        int j = v2;
-        for (i=0;i<MAXVEX;i++){
-            vex[i] = i;
-        }
-        for (i =0; i<10; i++){
-            for (j=0; j<10; j++){
-                if(i==j){
-                    graphmatrix[i][j] = 0;
-                }
-                else{
-                    graphmatrix[i][j] = graphmatrix[j][i] = weight;
-                }
-
-            }
-        }
-        return (graphmatrix[v1][v2]);
-    }
-    void Dijkstra(WHYGraph G, int v0,int Previous[], shorest_distance D ){
-        int SPT[MAXVEX];
-        int i;
-        int min = -1;
-        for(i=0;i<MAXVEX;i++){
-            SPT[i] = 0;
-            D[i] = graphmatrix[v0][i];
-            Previous[i] = i;
-        }
-        D[v0] = 0;
-        for(i=0;i<MAXVEX;i++){
-            int j,k,w;
-            for (j=0;j<MAXVEX;j++){
-                if (!SPT[j]&&D[j]<min){
-                    k=j;
-                    min=D[j];
-                }
-            }
-            SPT[k] = 1;
-            for(w=0;w<MAXVEX;w++){
-                if(!SPT[w]&&(min+G.graphmatrix[k][w])<D[w]){
-                    D[w] = min + G.graphmatrix[k][w];
-                    Previous[w] = k;
-                }
-            }
-        }
-    }
+// structure to hold map.txt
+struct graph{
+    char mapID;
+    double propSpeed; // in km/s
+    double transSpeed; // in Bytes/s
+    int numVert; // number of vertices in Map
+    int numEdge; // number of edges in Map
+    vector<vector<int> > adjmat;
+    map<int,int> nodeMap; // (continuous index 1,2,..n , actual node index) (Key, Value)
+    vector<int> node1;
+    vector<int> node2;
+    vector<int> edge; // distance in Km
+    vector< pair <int, int> > shortestPathPairs; // (node, distance (km)) in ascending distance order
+    
+    void dijkstra(int source);
+    int minDistance(int dist[], bool spt[]);
+    void printDijkstra(vector< pair <int, int> > shortestPathPairs);
 };
+// vector of struct graph to hold all possibile mapIDs
+vector<graph> graphs;
 
-typedef struct p2p{
-    int begin_p;
-    int end_p;
-    double p2p_weight;
 
-}p2p_dist;
-
-class Cmap{
-
-public:
-    char map_id;
-    double prop_speed;
-    double tran_speed;
-
-    //double ** graphmatrix;
-    unordered_set<int> points;
-    vector<p2p_dist> weight;
-    int point_count;
-    vector<vector<double>> adjMatrix;
-
-    Cmap(){};
-    ~Cmap(){};
-    Cmap(char id, double prop, double tran):map_id(id), prop_speed(prop), tran_speed(tran){}
-
-    // construct adjacency Matrix
-    void creatGraph()
-    {
-        point_count = points.size();
-        adjMatrix.reserve(point_count);
-        for(int i=0; i<point_count; i++)
-        {
-            adjMatrix.emplace_back(point_count, 0);
-        }
-        for(auto p : weight)
-        {
-            adjMatrix[p.begin_p][p.end_p] = p.p2p_weight;
-            adjMatrix[p.end_p][p.begin_p] = p.p2p_weight;
-        }
+void init_UDP(){
+    // *** 1. CREATE SOCKET ***
+    if ( (serverA_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ){
+        perror("Error creating UDP socket");
+        exit(EXIT_FAILURE);
     }
+    
+    // specify ServerA address
+    
+    serverAAddr.sin_family = AF_INET;
+    //AWS Port #
+    serverAAddr.sin_port = htons(SERVERAPORT);
+    //AWS IP ADDR - INADDR_LOOPBACK refers to localhost ("127.0.0.1")
+    serverAAddr.sin_addr.s_addr = inet_addr(LOCALIP);
+    
+    // *** 2. BIND SOCKET ***
+    
+    if (::bind(serverA_sockfd, (struct sockaddr *) &serverAAddr, sizeof(serverAAddr)) == -1 ){
+        close(serverA_sockfd);
+        perror("Error binding UDP socket");
+        exit(EXIT_FAILURE);
+    }
+}
 
-    //find shortest paths
-    typedef pair<int, int> pValue;
-    vector<double> Dijkstra(int src)
-    {
-        vector<double> shortestPath(point_count, DBL_MAX);
-        shortestPath[src] = 0;
-        unordered_set<int> visited;
-        priority_queue<pValue, vector<pValue>, greater<pValue>> pq;
-        pq.emplace(0, src);
-        while(!pq.empty())
-        {
-            int p = pq.top().second;
-            pq.pop();
-            if(visited.count(p)) continue;
-            visited.insert(p);
-
-            for(int i=0; i<point_count; i++)
-            {
-                if(adjMatrix[p][i] != 0)
-                {
-                    if(shortestPath[i] > shortestPath[p] + adjMatrix[p][i])
-                    {
-                        shortestPath[i] = shortestPath[p] + adjMatrix[p][i];
-                        pq.emplace(shortestPath[i], i);
+// Function to read map.txt, map index to node, and construct adjacency matrix.
+void constructMap(){
+    
+    // Open the file "map.txt" for input
+    std::ifstream fileInput("map.txt");
+    if (fileInput.is_open()){
+        
+        // index of graphs struct
+        int graphsIndex = 0;
+        int nodeIndex = 0;
+        string word;
+        // Continue looping as long as not at EOF!
+        while (fileInput.eof() != true) {
+            // Use std::getline to grab a whole line
+            /*
+             std::string line;
+             std::getline(fileInput, line);
+             std::cout << line << std::endl;
+             */
+            if (graphsIndex == 0){
+                
+                fileInput >> word;
+            }
+            //cout << word << endl;
+            
+            // check if filestream is start of new MapID
+            if ( isalpha(word.at(0)) ){
+                nodeIndex = 0;
+                graphs.push_back(graph());
+                graphs[graphsIndex].mapID = word.at(0);
+                //                cout << "Debug MapID: " << graphs[graphsIndex].mapID << endl;
+                
+                // store propagation speed
+                fileInput >> graphs[graphsIndex].propSpeed;
+                //                cout << "Debug PropSpeed: " << graphs[graphsIndex].mapID << ": " << graphs[graphsIndex].propSpeed << endl;
+                
+                // store Transmission speed
+                fileInput >> graphs[graphsIndex].transSpeed;
+                //                cout << "Debug TransSpeed: " << graphs[graphsIndex].mapID << ": " << graphs[graphsIndex].transSpeed << endl;
+                
+                // while fileInput != isalpha and != eof
+                fileInput >> word;
+                
+                while(isalpha(word.at(0)) == false && fileInput.eof() == false ){
+                    
+                    graphs[graphsIndex].node1.push_back(stoi(word));
+                    fileInput >> word;
+                    graphs[graphsIndex].node2.push_back(stoi(word));
+                    fileInput >> word;
+                    graphs[graphsIndex].edge.push_back(stoi(word));
+                    fileInput >> word;
+                    
+                    // For Debug only:
+                    //                    cout << "Debug node1: " << graphs[graphsIndex].mapID << ": " << graphs[graphsIndex].node1[nodeIndex] << endl;
+                    nodeIndex++;
+                }
+                
+                
+                
+                graphsIndex++;
+            } // end of MapID
+            
+            
+            
+        }
+        
+        // determine number of maps
+        
+        cout << "The Server A has constructed a list of " << graphs.size() << " maps: " << endl << "-------------------------------------------" << endl;
+        
+        
+        vector<int> combinedNodes;
+        vector<int>::iterator it;
+        for (int i = 0; i < graphs.size(); i++){
+            combinedNodes.resize(graphs[i].node1.size() + graphs[i].node2.size());
+            copy(graphs[i].node1.begin(), graphs[i].node1.end(), combinedNodes.begin());
+            copy(graphs[i].node2.begin(), graphs[i].node2.end(), combinedNodes.begin() + graphs[i].node1.size() );
+            
+            sort(combinedNodes.begin(),combinedNodes.end());
+            it = unique(combinedNodes.begin(), combinedNodes.end());
+            
+            
+            
+            
+            
+            // determine number of edges in each map
+            graphs[i].numEdge = graphs[i].edge.size();
+            
+            // vector of unique nodes
+            combinedNodes.resize(distance(combinedNodes.begin(),it));
+            
+            // create map to index node numbers
+            int mapKey = 0;
+            for(it = combinedNodes.begin(); it < combinedNodes.end(); it++){
+                graphs[i].nodeMap[mapKey] = *it;
+                mapKey++;
+            }
+            
+            // determine number of verticies in each map
+            graphs[i].numVert = combinedNodes.size();
+            
+            
+            // create size of adjacency matrix such that:
+            // row = node1, col = node2
+            graphs[i].adjmat.resize(graphs[i].numVert, vector<int>(graphs[i].numVert));
+            
+            
+            int node1MapKey = -1;
+            int node2MapKey = -1;
+            //loop through nodes and construct adjacency matrix
+            for (int j = 0; j < graphs[i].edge.size(); j++) {
+                // find Key of mapped node value
+                for (auto it = graphs[i].nodeMap.begin(); it != graphs[i].nodeMap.end(); it++){
+                    if (it->second == graphs[i].node1[j]){
+                        node1MapKey = it->first;
+                    }
+                    if (it->second == graphs[i].node2[j]){
+                        node2MapKey = it->first;
                     }
                 }
+                graphs[i].adjmat[node1MapKey][node2MapKey] = graphs[i].edge[j];
+                graphs[i].adjmat[node2MapKey][node1MapKey] = graphs[i].edge[j];
+                // }
             }
-        }
-        return shortestPath;
-    }
-/*
-    void adjust_points(int x){
-        std::vector<int>::iterator it;
-        it=find(points.begin(),points.end(),x);
-        if(it==points.end())
-            points.push_back(x);
-    }
-
-    void get_point(){
-        if(weight.size()!=0)
-        for(int i=0;i<weight.size();i++)
-            {
-                adjust_points(weight.at(i).begin_p);
-                adjust_points(weight.at(i).end_p);
-            }
-
-        if(points.size()!=0)
-        point_count=points.size();
-    }
-*/
-
-};
-
-
-
-int main(int argc,char const *argv[]){
-	int Num_Vertics,Num_Edges;
-	char Map_ID;
-    string file_txt = "map.txt";
-    string buffer;
-    vector <string> vs;
-    vector <Cmap*> map_list;
-    int map_num=0;
-
-
-//******push all string**********
-    ifstream inFile(file_txt, ios::in);
-    while(getline(inFile, buffer))
-    {
-        vs.push_back(buffer);
-        if(buffer.length() == 2)  map_num+=1;
-    }
-    inFile.close();
-    
-
-//*******Create Cmap*********
-    
-    vector<string>::iterator it;
-    /*
-    for(int i=0;i<map_num;i++)
-    {
-        Cmap*  temp_map =new Cmap();
-        map_list.push_back(temp_map);
-    }
-    */
-    int temp_map_id=-1;
-
-    it=vs.begin();
-    while(it<vs.end())
-    {
-        buffer=*it;
-        it++;
-
-        //*********First three ID Weight1 weight2***************
-        if(buffer.length()==2)
-        {
-            temp_map_id+=1;
             
-            char id = buffer[0];
-            double prop = stod(*it++);
-            double tran = stod(*it++);
-            Cmap* tmp_map = new Cmap(id, prop, tran);
-            map_list.push_back(tmp_map);
-
-            //map_list[temp_map_id]->map_id=buffer[0];
-            //map_list[temp_map_id]->prop_speed= stod(*it++);
-            //map_list[temp_map_id]->tran_speed= stod(*it++);
-
-            continue;
+            combinedNodes.clear();
+        } // end of for iterating through each MapID
+        
+        cout << "Map ID   Num Vertices   Num Edges" << endl << "-------------------------------------------" << endl;
+        for (int i = 0; i < graphs.size(); i++){
+            cout << graphs[i].mapID << setw(15) << graphs[i].numVert << setw(15) << graphs[i].numEdge << endl;
         }
-
-
-        //******Add Normal Distance************
-        const char* point = buffer.c_str();
-
-        p2p_dist temp_p2p =p2p_dist();
-        sscanf(point,"%d %d %lf",&temp_p2p.begin_p, &temp_p2p.end_p,&temp_p2p.p2p_weight);
-        map_list[temp_map_id]->weight.push_back(temp_p2p);
-        map_list[temp_map_id]->points.insert(temp_p2p.begin_p);
-        map_list[temp_map_id]->points.insert(temp_p2p.end_p);
+        
+        cout << "-------------------------------------------" << endl;
+        // a = 97, z = 122
+        // A = 65, Z = 90
+        
+        
+        //DEBUG: Prints Adjacency Matrix *******
+        /*
+         int flag = 1;
+         for( auto it2 = graphs[2].nodeMap.begin(); it2 !=  graphs[2].nodeMap.end(); it2++){
+         if (flag){
+         cout <<  setw(8) << it2->second;
+         flag = 0;
+         }
+         else
+         cout <<  setw(4) << it2->second;
+         }
+         cout << endl << endl;
+         
+         map<int, int>::iterator it1 = graphs[2].nodeMap.begin();
+         for( int i = 0; i < graphs[2].numVert; i++){
+         cout << setw(4) << it1->second;
+         for( int j = 0; j < graphs[2].numVert; j++){
+         cout <<  setw(4) << graphs[2].adjmat[i][j];
+         }
+         cout << endl;
+         
+         it1++;
+         }
+         */
+        
+        
+    } // end of reading file
+    
+    else {
+        std::cout << "Error: File not found :(" << std::endl;
     }
+    
+    
+} // end of construct map function
 
-    /*
-    for (int i = 0;i<map_list.size();i++){
-        for (int j = 0;j < map_list[i]->weight.size();j++){
-            cout << map_list[i]->weight.at(j).begin_p << map_list[i]->weight.at(j).end_p << map_list[i]->weight.at(j).p2p_weight<<endl;
-        }   
+// Function to recv Map ID and Vertex Index respectively from AWS
+void recvFromAWS(){
+    socklen_t awsLen = sizeof(awsAddrUDP);
+    //    recv map ID
+    if ((recvLen1 = recvfrom(serverA_sockfd, recvMapID, BUFLEN, 0, (struct sockaddr *) &awsAddrUDP, &awsLen)) < 1){
+        perror("Error receiving from AWS");
+        exit(EXIT_FAILURE);
     }
-    */
-    for(Cmap* map : map_list) map->creatGraph(); 
-    for(Cmap* map : map_list)
-    {
-        for(int p : map->points)
-        {
-            vector<double> res = map->Dijkstra(p);
-            for(double dist : res)
-            {
-                cout<<dist<<" ";
+    
+    //    recv source vertex index
+    if ((recvLen1 = recvfrom(serverA_sockfd, recvVertexIndex, BUFLEN, 0, (struct sockaddr *) &awsAddrUDP, &awsLen)) < 1){
+        perror("Error receiving from AWS");
+        exit(EXIT_FAILURE);
+    }
+    
+    cout << "The Server A has received input for finding shortest paths: starting vertex " << recvVertexIndex << " of map " << recvMapID << "." << endl;
+}
+
+
+// determines min distance of nodes not in SPT from https://www.geeksforgeeks.org/dijkstras-shortest-path-algorithm-greedy-algo-7/
+int graph::minDistance(int dist[], bool spt[]){
+    // Initialize min value
+    int min = INT_MAX;
+    int min_node;
+    
+    for (int v = 0; v < numVert; v++){
+        // compare distance recorded in distance vector with
+        if (spt[v] == false && dist[v] <= min){
+            min = dist[v];
+            min_node = v;
+        }
+    }
+    return min_node;
+}
+
+// Prints shortest path to terminal
+void graph::printDijkstra(vector< pair <int, int> > shortestPathPairs)
+{
+    
+    cout << "The Server A has identified the following shortest paths:" << endl;
+    cout << "-----------------------------------\n" << left << setw(20) << "Destination" << "Min Length\n-----------------------------------" << endl;
+    
+    for ( auto it = shortestPathPairs.begin(); it != shortestPathPairs.end(); it++){
+        cout << left << setw(20) << nodeMap[it->first] << it->second << endl;
+    }
+    cout << "-----------------------------------" << endl;
+}
+
+
+// Dijkstra algorithm resource: https://www.geeksforgeeks.org/dijkstras-shortest-path-algorithm-greedy-algo-7/
+// and EE 450 class notes
+void graph::dijkstra(int source){
+    
+    
+    int dist[numVert]; // shortest distance from source to each node such that dist[i] = d -> shortest path from source to i = d
+    
+    // spanning tree algoritm - SPT
+    bool spt[numVert]; // graph to create spanning tree by including all nodes in original map
+    
+    // Initialize all distances as INFINITE and spt[] as false
+    //    INT_MAX ~= INF
+    for (int i = 0; i < numVert; i++){
+        dist[i] = INT_MAX;
+        spt[i] = false;
+    }
+    
+    int sourceKey = -1;
+    // convert source node input to key so it corresponds to adjacency matrix
+    for (auto it = nodeMap.begin(); it != nodeMap.end(); it++){
+        if (it->second == source){
+            sourceKey = it->first;
+        }
+    }
+    if (sourceKey == -1){
+        cout << "Source node not found in Map" << endl;
+        // send error to AWS
+        int sendLen;
+        if ( ( sendLen = sendto(serverA_sockfd, "-2", strlen("-2"), 0, (struct sockaddr *) &awsAddrUDP, sizeof(struct sockaddr_in))) == -1) {
+            perror("Error sending UDP message to AWS from Server A");
+            exit(EXIT_FAILURE);
+        }
+        exit(EXIT_FAILURE);
+    }
+    
+    // set source distance to 0 - not considered in output
+    dist[sourceKey] = 0;
+    
+    // Find shortest path for all vertices
+    for (int count = 0; count < numVert - 1; count++) {
+        // check for min distances and store
+        int node1 = minDistance(dist, spt);
+        
+        // add node1 in SPT
+        spt[node1] = true;
+        
+        // Update dist value of the adjacent vertices of the picked vertex.
+        for (int node2 = 0; node2 < numVert; node2++){
+            
+            // Update dist[node2] only if is not in spt, there is an edge from
+            // node1 to node2, and total weight of path from src to node2 through node1 is
+            // smaller than current value of dist[node2]
+            if (!spt[node2] && adjmat[node1][node2] && dist[node1] != INT_MAX && dist[node1] + adjmat[node1][node2] < dist[node2]){
+                
+                dist[node2] = dist[node1] + adjmat[node1][node2];
             }
-            cout<<endl;
         }
     }
+    
+    
+    // add shortest path elements in pair to reorder by ascending distance
+    for (int i = 0; i < numVert; i++){
+        shortestPathPairs.push_back( make_pair(i ,dist[i]) );
+    }
+    
+    /*
+    //lambda funct for sorting pairs by distance instead of vertex
+    std::sort(shortestPathPairs.begin(), shortestPathPairs.end(), [](const std::pair<int,int> &left, const std::pair<int,int> &right) {
+        return left.second < right.second;
+    });
+    */
+    
+    // erase source node from list
+    shortestPathPairs.erase(shortestPathPairs.begin() + sourceKey);
+    
+    // print shortest path
+    printDijkstra(shortestPathPairs);
+}
 
-    int WHYsocket;
-	struct addrinfo hints, *server_info, *p;
-	int res;
-	int numbytes;
-	char buf[MAXBUFLEN];
-	
-	struct sockaddr_storage their_addr;
+// function to send shortest path data to AWS
+// Sends Propagation speed, transmission speed followed by a loop of destination node and distance until the list is exhausted. (all items sent respectively)
+void sendToAws(int graphIndex){
+    char buf [BUFLEN];
+    char destBuf[BUFLEN];
+    char lenBuf[BUFLEN];
+    int sendLen;
+    
+    sprintf(buf,"%f",graphs[graphIndex].propSpeed);
+    
+    // send prop speed to AWS
+    if ( ( sendLen = sendto(serverA_sockfd, buf, strlen(buf), 0, (struct sockaddr *) &awsAddrUDP, sizeof(struct sockaddr_in))) == -1) {
+        perror("Error sending UDP message to AWS from Server A");
+        exit(EXIT_FAILURE);
+    }
+    
+    sprintf(buf,"%f",graphs[graphIndex].transSpeed);
+    
+    // send trans speed to AWS
+    if ( ( sendLen = sendto(serverA_sockfd, buf, strlen(buf), 0, (struct sockaddr *) &awsAddrUDP, sizeof(struct sockaddr_in))) == -1) {
+        perror("Error sending UDP message to AWS from Server A");
+        exit(EXIT_FAILURE);
+    }
+    
+    memset(buf, '\0', sizeof(buf));
+    // send destination and min length to AWS
+    for ( auto it = graphs[graphIndex].shortestPathPairs.begin(); it != graphs[graphIndex].shortestPathPairs.end(); it++){
+        
+        
+        
+        // store destination node in buffer to send
+        sprintf(destBuf,"%d",graphs[graphIndex].nodeMap[it->first]);
+        // store min length in buffer to send
+        sprintf(lenBuf,"%d",it->second);
+        
+        
+        
+        if ( ( sendLen = sendto(serverA_sockfd, destBuf, strlen(destBuf), 0, (struct sockaddr *) &awsAddrUDP, sizeof(struct sockaddr_in))) == -1) {
+            perror("Error sending UDP message to AWS from Server A");
+            exit(EXIT_FAILURE);
+        }
+        // erase destBuf
+        memset(destBuf, '\0', sizeof(destBuf));
+        if ( ( sendLen = sendto(serverA_sockfd, lenBuf, strlen(lenBuf), 0, (struct sockaddr *) &awsAddrUDP, sizeof(struct sockaddr_in))) == -1) {
+            perror("Error sending UDP message to AWS from Server A");
+            exit(EXIT_FAILURE);
+        }
+        // erase lenBuf
+        memset(lenBuf, '\0', sizeof(lenBuf));
+    }
+    memset(buf, '\0', sizeof(buf));
+    // Send NULL char to signify end of communication
+    if ( ( sendLen = sendto(serverA_sockfd, buf, strlen(buf), 0, (struct sockaddr *) &awsAddrUDP, sizeof(struct sockaddr_in))) == -1) {
+        perror("Error sending UDP message to AWS from Server A");
+        exit(EXIT_FAILURE);
+    }
+    
+    
+    
+    cout << "The Server A has sent shortest paths to AWS." << endl;
+    
+    // Erase ordered pairs vector so it can be reused if there is another query
+    graphs[graphIndex].shortestPathPairs.clear();
+}
 
-	socklen_t addr_len;
-	
-
-	memset(&hints, 0, sizeof hints);
-	hints.ai_family = AF_UNSPEC; // 设 定 AF_INET 以 强 制 使 用 IPv4
-	hints.ai_socktype = SOCK_DGRAM;
-	hints.ai_flags = AI_PASSIVE; // 使 用 我 的 IP
-	if ((res = getaddrinfo(HOST, UDPPORT, &hints, &server_info)) != 0) {
-		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(res));
-		return 1;
-	}
-// 用 循 环 找 出 全 部 的 结 果 , 并 bind 到 首 先 找 到 能 bind 的
-	for(p = server_info; p != NULL; p = p->ai_next) {
-		if ((WHYsocket = socket(p->ai_family, p->ai_socktype,p->ai_protocol)) == -1) {
-			perror("listener: socket");
-			continue;
-		}
-		if (bind(WHYsocket, p->ai_addr, p->ai_addrlen) == -1) {
-			close(WHYsocket);
-			perror("listener: bind");
-			continue;
-		}
-		break;
-	}
-	if (p == NULL) {
-		fprintf(stderr, "listener: failed to bind socket\n");
-		return 2;
-	}
-	freeaddrinfo(server_info);
-	printf("The server A is up and running using UDP on port %s.\n",PORTA);
-
-
+int main (){
+    
+    init_UDP();
+    
+    // ServerA boot up message
+    cout << "The Server A is up and running using UDP on port " << SERVERAPORT << "." << endl;
+    
+    constructMap();
+    
+    //    recv Map ID & start Node
+    //    int recvfrom(int sockfd, void *buf, int len, unsigned int flags, struct sockaddr *from, int *fromlen);
+    
     while(1){
-        //receive all the inforamtion from client
-        addr_len = sizeof their_addr;
-        if ((numbytes = recvfrom(WHYsocket, buf, MAXBUFLEN-1 , 0,(struct sockaddr *)&their_addr, &addr_len)) == -1) {
-		perror("recvfrom");
-		exit(1);
-		}
-        printf("Accept Successfully!\n");
-        recv(numbytes, &Map_ID, sizeof(Map_ID), 0);
-        recv(numbytes, &Num_Vertics, sizeof(Num_Vertics), 0);
-        recv(numbytes, &Num_Edges, sizeof(Num_Edges), 0);
-        printf("The server A has constructed a list of %d maps:\n", map_num);//need to be filled in
-        printf("Map ID   Num Vertics   Num Edges");
-
-        printf("%s\n",Map_ID);
-		recv()//need to be filled in
-        printf("The server A has received input for finding shortest paths:starting vertex %d of map %s", vertex, Map_ID);
-
-        close(socket_fd); 
-      }
-
-    return 0;
+        recvFromAWS();
+        //int graphIndex = (int)(size_t)toupper(recvMapID[0]) - 65;
+        int graphIndex = 0;
+        for (int i = 0; i < graphs.size(); i++){
+            if (graphs[i].mapID == recvMapID[0])
+                graphIndex = i;
+        }
+        //cout << testIndex << endl;
+        //cout << graphs[(int)(size_t)recvMapID - 65].mapID << endl;
+        graphs[graphIndex].dijkstra(atoi(recvVertexIndex));
+        //send result back to aws
+        sendToAws(graphIndex);
+        
+    }
+    
+    return EXIT_SUCCESS;
 }
 
 
 
+/*
+ <Map ID 1>
+ <Propagation speed>
+ <Transmission speed>
+ <Vertex index for one end of the edge> <Vertex index for the other end> <Distance between the two vertices>
+ … (Specification for other edges)
+ <Map ID 2>
+ */

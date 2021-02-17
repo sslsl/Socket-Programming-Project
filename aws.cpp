@@ -1,279 +1,533 @@
+
+#include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
-#include <netdb.h>
-#include <netinet/in.h>
 #include <unistd.h>
-#include <sys/socket.h>
-#include <errno.h>
-#include <string.h>
+#include <string>
+#include <cstring>
 #include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
 #include <arpa/inet.h>
-#include <sys/wait.h>
-#include <signal.h>
-#include <sys/time.h>
+#include <vector>
+#include <iomanip>
+#include <math.h>
 
+//#include "aws.h"
 using namespace std;
 
-#define CLIENTPORT "24595"   //TCP port
-#define UDPPORT "23595"     //UDP port
-#define HOST "localhost"
-#define BACKLOG 10 // how many pending connections queue will hold
-#define PORTA "21595"
-#define PORTB "22595"
+
+#define LOCALIP "127.0.0.1" // IP Address of Host
+#define TCPPORT 24984 // TCP Port # client connects to
+#define UDPPORT 23984 // UDP Port # backend servers connects to
+#define SERVERAPORT 21984
+#define SERVERBPORT 22984
+#define BACKLOG 3 // backlog of pending connections for listen
+#define BUFLEN 1000
+
+char buf [BUFLEN];
+char mapID [BUFLEN];
+char vertexIndex[BUFLEN];
+char fileSize[BUFLEN];
+int recvLen1, sendLen;
+vector< pair <int, int> > shortestPathPairs; // (node, distance (km)) in ascending distance order
+double propSpeed; // in km/s
+double transSpeed; // in Bytes/s
+vector<double> propDelay;
+double transDelay;
+vector<double> totDelay;
+
+struct sockaddr_in awsAddrTCP, awsAddrUDP, clientAddr, serverAAddr, serverBAddr;
+int aws_TCP_sockfd, aws_UDP_sockfd, new_aws_TCP_sockfd;
 
 
-int Source_Vertex_Index, File_Size;
-char Map_ID;
-
-//beej
-void sigchld_handler(int s)
-{
-    // waitpid() might overwrite errno, so we save and restore it:
-    int saved_errno = errno;
-    while(waitpid(-1, NULL, WNOHANG) > 0);
-    errno = saved_errno;
-}
-
-//beej
-void *get_in_addr(struct sockaddr *sa)
-{
-    if (sa->sa_family == AF_INET) {
-        return &(((struct sockaddr_in*)sa)->sin_addr);
-    }
-    return &(((struct sockaddr_in6*)sa)->sin6_addr);
-}
-
-void getUDPconnectionwithserverA(){
-    int WHYsocket;
-    struct addrinfo hints, *server_info, *p;
-    int res;
-    int numbytes;
-    int flag;
-    memset(&hints,0,sizeof hints);
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_DGRAM;
-
-    if ((res = getaddrinfo(HOST,PORTA,&hints,&server_info))!=0){
-        fprintf(stderr, "getaddrinfo:%s\n", gai_strerror(res));
-        return 1;
-    }
-    for (p = server_info;p!=NULL;p = p->ai_next){
-        if ((WHYsocket = socket(p->ai_family,p->ai_socktype,p->ai_protocol))==-1){
-            perror("talker socket;")
-            continue;
-        }
-        break;
-    }
-    if (p==NULL){
-        fprintf(stderr, "talker:failed to bind socket\n" );
-        return 1;
-    }
-    int numbytes = sendto(WHYsocket, &Map_ID,sizeof(Map_ID),0,p->ai_addr,p->ai_addrlen);
-    if (numbytes == -1){
-        perror("The AWS has sent map id to server A");
-    }
-    int numbytes = sendto(WHYsocket, &Source_Vertex_Index,sizeof(Source_Vertex_Index),0,p->ai_addr,p->ai_addrlen);
-    if (numbytes == -1){
-        perror("The AWS has sent starting vertex to server A");
-    }
-
-    cout << "The AWS has sent map ID and starting vertex to server A using UDP over port 23595." << endl;
-    //need to be filled in
-    int numbytes = recvfrom(WHYsocket, &Tt, sizeof(Tt),0,NULL,NULL);
-    if(numbytes == -1){
-        perror("The AWS has received Destination from server A");
-        exit(1);
-    }
-    int numbytes = recvfrom(WHYsocket, &Tp, sizeof(Tp),0,NULL,NULL);
-    if(numbytes == -1){
-        perror("The AWS has received shortest path from server A");
-        exit(1);
-    }
-   
-
-    cout << "The AWS has shortest path from server A;" << endl;
-
-    cout << setfill('-') << setw(50) << '-' << endl;
-    cout.fill(' ');         //print out the result and then close the socket!
-    cout << left << setw(15) << "Destination" << setw(15)  << "Min Length" << setw(15) << endl;
-    cout << setfill('-') << setw(50) << '-' << endl;
-    cout.fill(' ');
-    for (int i = 0;i < numVertices;i++) {
-        cout << left << setw(15) << vertexName[i] << setw(15) << minDis[i];
-        cout << left << fixed << setw(15) << setprecision(2) << Tt;
-    }
-    cout << setfill('')<<setw(50)<<'-'<<endl;
-    cout.fill('');
-    close(WHYsocket);
-    return 0;
-
-}
-void getUDPconnectionwithserverB(){
-    int WHYsocket;
-    struct addrinfo hints, *server_info, *p;
-    int res;
-    int numbytes;
-    int flag;
-    memset(&hints,0,sizeof hints);
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_DGRAM;
-
-    if ((res = getaddrinfo(HOST,PORTB,&hints,&server_info))!=0){
-        fprintf(stderr, "getaddrinfo:%s\n", gai_strerror(res));
-        return 1;
-    }
-    for (p = server_info;p!=NULL;p = p->ai_next){
-        if ((WHYsocket = socket(p->ai_family,p->ai_socktype,p->ai_protocol))==-1){
-            perror("talker socket;")
-            continue;
-        }
-        break;
-    }
-    if (p==NULL){
-        fprintf(stderr, "talker:failed to bind socket\n" );
-        return 1;
-    }
-    int numbytes = sendto(WHYsocket, &prop_speed,sizeof(prop_speed),0,p->ai_addr,p->ai_addrlen);
-    if (numbytes == -1){
-        perror("The AWS has sent the propagation speed to server B");
-    }
-    int numbytes = sendto(WHYsocket, &tran_speed,sizeof(tran_speed),0,p->ai_addr,p->ai_addrlen);
-    if (numbytes == -1){
-        perror("The AWS has sent the transmission speed to server B");
-    }
-    int numbytes = sendto(WHYsocket, &File_Size,sizeof(File_Size),0,p->ai_addr,p->ai_addrlen);
-    if (numbytes == -1){
-        perror("The AWS has sent the filesize to server B");
-    }
-    int numbytes = sendto(WHYsocket, &Source_Vertex_Index,sizeof(Source_Vertex_Index),0,p->ai_addr,p->ai_addrlen);
-    if (numbytes == -1){
-        perror("The AWS has sent the filesize to server B");
-    }
-
-    int tmp = 0;
-    double tmp_value;
-    for (int i =0;i<Source_Vertex_Index;i++){
-        tmp = Source_Vertex_Index[i];
-        int numbytes = sendto(WHYsocket,&tmp,sizeof(tmp),0,p->ai_addr,p->ai_addrlen);
-        if (numbytes ==-1){
-            perror("AWS has sent vertex to server B");
-            exit(1);
-        }
-    }
-    for (int i =0; i<Source_Vertex_Index;i++){
-        tmp = shortestPath[i];
-        int numbytes = sendto(WHYsocket,&tmp,sizeof(tmp),0,p->ai_addr,p->ai_addrlen);
-        if (numbytes ==-1){
-            perror("AWS has sent shortestPath to server B");
-            exit(1);
-        }
-    }
-    cout << "The AWS has sent path length, propagation speed and transmission speed to server B using UDP over port 23595." << endl;
-    int numbytes = recvfrom(WHYsocket, &Tt, sizeof(Tt),0,NULL,NULL);
-    if(numbytes == -1){
-        perror("The AWS has received Tt from server B");
-        exit(1);
-    }
-    int numbytes = recvfrom(WHYsocket, &Tp, sizeof(Tp),0,NULL,NULL);
-    if(numbytes == -1){
-        perror("The AWS has received Tp from server B");
-        exit(1);
-    }
-    int numbytes = recvfrom(WHYsocket, &delay, sizeof(delay),0,NULL,NULL);
-    if(numbytes == -1){
-        perror("The AWS has received delay from server B");
-        exit(1);
-    }
-
-    cout << "The AWS has received delay from server B;" << endl;
-
-    cout << setfill('-') << setw(50) << '-' << endl;
-    cout.fill(' ');         //print out the result and then close the socket!
-    cout << left << setw(15) << "Destination" << setw(15)  << "Tt" << setw(15) << "Tp" << setw(15) << "Delay" << endl;
-    cout << setfill('-') << setw(50) << '-' << endl;
-    cout.fill(' ');
-    for (int i = 0;i < numVertices;i++) {
-        cout << left << setw(15) << vertexName[i] << setw(15) << shortestPath[i];
-        cout << left << fixed << setw(15) << setprecision(2) << Tt[i];
-        cout << left << fixed << setw(15) << setprecision(2) << Tp[i];
-        cout << left << fixed << setw(15) << setprecision(2) << Tp[i] + Tt << endl;
-    }
-    cout << setfill('')<<setw(50)<<'-'<<endl;
-    cout.fill('');
-    close(WHYsocket);
-    return 0;
-}
-
-
-
-int main(){
-    //from Beej
-    int socket_fd;
-    int new_fd;  // listen on sock_fd, new connection on new_fd
-    struct addrinfo hints, *server_info, *p;
-    struct sockaddr_storage client_addr; // connector's address information
-    socklen_t sin_size;
-    int flag=1;
-    int res;
-
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
- // hints.ai_flags = AI_PASSIVE; // use my IP
-
-    res = getaddrinfo(HOST, CLIENTPORT, &hints, &server_info);
-    if (res!= 0) {
-        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(res));
-        return 1;
-    }
-
-    // loop through all the results and bind to the first we can
-    for (p = server_info; p != NULL; p = p->ai_next) {
-        if ((socket_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) < 0) {
-            perror("server: socket");
-            continue;
-        }
-        if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(int))< 0) {
-            perror("setsockopt");
-            exit(1);
-        }
-        if (bind(socket_fd, p->ai_addr, p->ai_addrlen) < 0) {
-            close(socket_fd);
-            perror("server: bind");
-            continue;
-        }
-        break;
-    }
-    if (p == NULL) {
-        fprintf(stderr, "server: failed to bind\n");
-
-    }
-    freeaddrinfo(server_info); // all done with this structure
-
-    if (listen(socket_fd, BACKLOG) == -1) {
+// Initializes TCP Port on AWS
+void init_TCP(){
+    
+    // *** 1. CREATE SOCKET ***
+       if ( (aws_TCP_sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0){
+           perror("Error creating TCP socket");
+           exit(EXIT_FAILURE);
+       }
+       // specify AWS address
+       awsAddrTCP.sin_family = AF_INET;
+       //AWS Port #
+       awsAddrTCP.sin_port = htons(TCPPORT);
+       //AWS IP ADDR - INADDR_LOOPBACK refers to localhost ("127.0.0.1")
+       awsAddrTCP.sin_addr.s_addr = inet_addr(LOCALIP);
+       
+       // *** 2. BIND SOCKET ***
+       
+       if (::bind(aws_TCP_sockfd, (struct sockaddr *) &awsAddrTCP, sizeof(awsAddrTCP)) == -1 ){
+           close(aws_TCP_sockfd);
+           perror("Error binding TCP socket");
+           exit(EXIT_FAILURE);
+       }
+    // *** 3. LISTEN FOR CONNECTIONS ***
+    
+    if (listen(aws_TCP_sockfd, BACKLOG) == -1){
         perror("listen");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
-    printf( "The AWS is up and running.\n");
-
-    while(1){
-        //receive all the inforamtion from client
-        sin_size = sizeof client_addr;   
-        new_fd = accept(socket_fd, (struct sockaddr *) &client_addr, &sin_size);
-        if (new_fd == -1) {
-            perror("accept");           
-            exit(1);
-        }
-        printf("Accept Successfully!\n");
-        recv(new_fd, &Map_ID, sizeof(Map_ID), 0);
-        recv(new_fd, &Source_Vertex_Index, sizeof(Source_Vertex_Index), 0);
-        recv(new_fd, &File_Size, sizeof(File_Size), 0);
-        printf("The AWS has received Map_ID %c, start vertex %d, and file size %d, from the client using TCP over port %s.\n", Map_ID, Source_Vertex_Index, File_Size, CLIENTPORT);
-        close(new_fd); 
-    }
-    getUDPconnectionwithserverA();
-    getUDPconnectionwithserverB();
-
-    return 0;
 }
 
+void init_UDP(){
+    // *** 1. CREATE SOCKET ***
+    if ( (aws_UDP_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ){
+        perror("Error creating UDP socket");
+        exit(EXIT_FAILURE);
+    }
+
+    // specify AWS address
+    
+    awsAddrUDP.sin_family = AF_INET;
+    //AWS Port #
+    awsAddrUDP.sin_port = htons(UDPPORT);
+    //AWS IP ADDR - INADDR_LOOPBACK refers to localhost ("127.0.0.1")
+    awsAddrUDP.sin_addr.s_addr = inet_addr(LOCALIP);
+    
+    // *** 2. BIND SOCKET ***
+    
+    if (::bind(aws_UDP_sockfd, (struct sockaddr *) &awsAddrUDP, sizeof(awsAddrUDP)) == -1 ){
+        close(aws_UDP_sockfd);
+        perror("Error binding UDP socket");
+        exit(EXIT_FAILURE);
+    }
+}
+
+void acceptFromClient(){
+    //clientlen from CMU class notes
+    socklen_t clientLen = sizeof(clientAddr);
+    //int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+    if ( (new_aws_TCP_sockfd = accept(aws_TCP_sockfd,(struct sockaddr *) &clientAddr, &clientLen)) == -1){
+        perror("Error accepting socket");
+        exit(EXIT_FAILURE);
+    }
+}
+
+void recvFromClient(){
+    
+    recvLen1 = recv(new_aws_TCP_sockfd, mapID, BUFLEN, 0);
+    if (recvLen1 == -1){
+        perror("Error receiving message from client");
+        close(new_aws_TCP_sockfd);
+        exit(EXIT_FAILURE);
+    }
+    mapID[recvLen1] = '\0';
+//    cout << "Debug M: " << mapID << endl;
+
+    recvLen1 = recv(new_aws_TCP_sockfd, vertexIndex, BUFLEN, 0);
+    if (recvLen1 == -1){
+        perror("Error receiving message from client");
+        close(new_aws_TCP_sockfd);
+        exit(EXIT_FAILURE);
+    }
+    vertexIndex[recvLen1] = '\0';
+//    cout << "Debug V: " << vertexIndex << endl;
+    recvLen1 = recv(new_aws_TCP_sockfd, fileSize, BUFLEN, 0);
+    if (recvLen1 == -1){
+        perror("Error receiving message from client");
+        close(new_aws_TCP_sockfd);
+        exit(EXIT_FAILURE);
+    }
+    fileSize[recvLen1] = '\0';
+//    cout << "Debug F: " << fileSize << endl;
+    
+    
+//    if ((recvLen1 = recv(client_sockfd, buf, BUFLEN, 0)) < 0){
+//        perror("Error receiving message from client");
+//        exit(EXIT_FAILURE);
+//    }
+//
+//    buf[recvLen1] = '\0';
+//    cout << buf << endl;
+}
+ 
+// Sets port and IP of serverA and serverB
+void setServerAB(){
+//    Server A
+    serverAAddr.sin_family = AF_INET;
+    //AWS Port #
+    serverAAddr.sin_port = htons(SERVERAPORT);
+    //AWS IP ADDR - INADDR_LOOPBACK refers to localhost ("127.0.0.1")
+    serverAAddr.sin_addr.s_addr = inet_addr(LOCALIP);
+    
+//    Server B
+    serverBAddr.sin_family = AF_INET;
+    //AWS Port #
+    serverBAddr.sin_port = htons(SERVERBPORT);
+    //AWS IP ADDR - INADDR_LOOPBACK refers to localhost ("127.0.0.1")
+    serverBAddr.sin_addr.s_addr = inet_addr(LOCALIP);
+}
+
+// Sends Map ID and Vertex index to Server A via UDP
+void sendToA(){
+    
+    if ((sendLen = sendto(aws_UDP_sockfd, mapID, strlen(mapID), 0, (struct sockaddr *) &serverAAddr, sizeof(struct sockaddr_in))) == -1) {
+        perror("Error sending UDP message to Server A from AWS");
+        close(new_aws_TCP_sockfd);
+        exit(EXIT_FAILURE);
+    }
+    if ((sendLen = sendto(aws_UDP_sockfd, vertexIndex, strlen(vertexIndex), 0, (struct sockaddr *) &serverAAddr, sizeof(struct sockaddr_in))) == -1) {
+        perror("Error sending UDP message to Server A from AWS");
+        close(new_aws_TCP_sockfd);
+        exit(EXIT_FAILURE);
+    }
+    
+    cout << "The AWS has sent map ID and starting vertex to server A using UDP over port " << SERVERAPORT << endl;
+}
+
+void recvFromA(){
+    char destBuf[BUFLEN];
+    char lenBuf[BUFLEN];
+    socklen_t serverALen = sizeof(serverAAddr);
+    
+    // recv prop speed
+    
+    if ((recvLen1 = recvfrom(aws_UDP_sockfd, buf, BUFLEN, 0, (struct sockaddr *) &serverAAddr, &serverALen )) < 0){
+        perror("Error receiving message from Server A");
+        close(new_aws_TCP_sockfd);
+        exit(EXIT_FAILURE);
+    }
+    buf[recvLen1] = '\0';
+    
+    // if buf == -2 then the map or source node is incorrect and AWS should abort
+    if (atoi(buf) == -2){
+        cerr << "Received error from Server A: Map or source node invalid\n";
+        // send error to Server B to terminate process
+        int sendLen;
+        if ((sendLen = sendto(aws_UDP_sockfd, "-2", strlen("-2"), 0, (struct sockaddr *) &serverBAddr, sizeof(struct sockaddr_in))) == -1) {
+            perror("Error sending UDP message to Server B from AWS");
+            close(new_aws_TCP_sockfd);
+            exit(EXIT_FAILURE);
+        }
+        // send error to client to terminate process
+        if (send(new_aws_TCP_sockfd, "-2", strlen("-2"), 0) == -1){
+            perror("Error sending data to client");
+            close(new_aws_TCP_sockfd);
+            exit(EXIT_FAILURE);
+        }
+        
+        exit(EXIT_FAILURE);
+    }
+    
+    propSpeed = atof(buf);
+//    cout << "DEBUG: " << propSpeed << endl;
+    
+    //  recv trans speed
+    if ((recvLen1 = recvfrom(aws_UDP_sockfd, buf, BUFLEN, 0, (struct sockaddr *) &serverAAddr, &serverALen )) < 0){
+        perror("Error receiving message from Server A");
+        close(new_aws_TCP_sockfd);
+        exit(EXIT_FAILURE);
+       }
+    buf[recvLen1] = '\0';
+    transSpeed = atof(buf);
+//    cout << "DEBUG: " << transSpeed << endl;
+    
+    memset(buf, '0', sizeof(buf));
+    int recvDone = 0; // 0 = not finished receiving, 1 = finished receiving
+    while (!recvDone){
+        
+        if ((recvLen1 = recvfrom(aws_UDP_sockfd, destBuf, BUFLEN, 0, (struct sockaddr *) &serverAAddr, &serverALen )) < 0){
+            perror("Error receiving message from Server A");
+            close(new_aws_TCP_sockfd);
+            exit(EXIT_FAILURE);
+        }
+        destBuf[recvLen1] = '\0';
+//        cout << "DEBUG dest: " << destBuf << endl;
+        
+        // receive min length if destination received is valid
+        if (destBuf[0] != '\0'){
+            if ((recvLen1 = recvfrom(aws_UDP_sockfd, lenBuf, BUFLEN, 0, (struct sockaddr *)&serverAAddr, &serverALen )) < 0){
+                perror("Error receiving message from Server A");
+                close(new_aws_TCP_sockfd);
+                exit(EXIT_FAILURE);
+            }
+            lenBuf[recvLen1] = '\0';
+//            cout << "DEBUG len: " << lenBuf << endl;
+
+        
+            shortestPathPairs.push_back(make_pair(atoi(destBuf), atoi(lenBuf)) );
+        }
+        else{
+            //toggle recvDone
+            recvDone = 1;
+        }
+         
+//        cout << "DEBUG: " << recvDone << endl;
+    } // end while
+    
+    
+
+    cout << "The AWS has received shortest path from server A: " << endl << "--------------------------------" << endl << left << setw(20) << "Destination" << "Min Length" << endl << "--------------------------------" << endl;
+    
+
+
+
+    for (auto it = shortestPathPairs.begin(); it != shortestPathPairs.end(); it++){
+        cout << setw(20) << it->first << it->second << endl;
+    }
+    cout << "--------------------------------" << endl;
+}
+
+// Sends propspeed, transspeed, and Dijkstra result to Server B via UDP
+void sendToB(){
+    char destBuf[BUFLEN];
+    char lenBuf[BUFLEN];
+   
+    // send file size
+    
+    if ((sendLen = sendto(aws_UDP_sockfd, fileSize, strlen(fileSize), 0, (struct sockaddr *) &serverBAddr, sizeof(struct sockaddr_in))) == -1) {
+        perror("Error sending UDP message to Server B from AWS");
+        close(new_aws_TCP_sockfd);
+        exit(EXIT_FAILURE);
+      }
+    
+    memset(fileSize, '\0' , sizeof(fileSize));
+    
+    // send prop speed
+    sprintf(buf, "%f", propSpeed);
+    if ((sendLen = sendto(aws_UDP_sockfd, buf, strlen(buf), 0, (struct sockaddr *) &serverBAddr, sizeof(struct sockaddr_in))) == -1) {
+        perror("Error sending UDP message to Server B from AWS");
+        close(new_aws_TCP_sockfd);
+        exit(EXIT_FAILURE);
+    }
+    
+    // send trans speed
+     sprintf(buf, "%f", transSpeed);
+    if ((sendLen = sendto(aws_UDP_sockfd, buf, strlen(buf), 0, (struct sockaddr *) &serverBAddr, sizeof(struct sockaddr_in))) == -1) {
+        perror("Error sending UDP message to Server B from AWS");
+        close(new_aws_TCP_sockfd);
+        exit(EXIT_FAILURE);
+    }
+    
+    // send shortest paths
+    
+    for(auto it = shortestPathPairs.begin(); it != shortestPathPairs.end(); it++){
+        // send dest
+        sprintf(destBuf, "%d", it->first);
+        if ((sendLen = sendto(aws_UDP_sockfd, destBuf, strlen(destBuf), 0, (struct sockaddr *) &serverBAddr, sizeof(struct sockaddr_in))) == -1) {
+            perror("Error sending UDP message to Server B from AWS");
+            close(new_aws_TCP_sockfd);
+            exit(EXIT_FAILURE);
+        }
+        memset(destBuf, '\0', sizeof(lenBuf));
+        
+        // send length
+        sprintf(lenBuf, "%d", it->second);
+        if ((sendLen = sendto(aws_UDP_sockfd, lenBuf, strlen(lenBuf), 0, (struct sockaddr *) &serverBAddr, sizeof(struct sockaddr_in))) == -1) {
+            perror("Error sending UDP message to Server B from AWS");
+            close(new_aws_TCP_sockfd);
+            exit(EXIT_FAILURE);
+        }
+     
+        memset(lenBuf, '\0', sizeof(lenBuf));
+    }
+    memset(buf, '\0', sizeof(buf));
+    // Send NULL char to signify end of communication
+    if ( ( sendLen = sendto(aws_UDP_sockfd, buf, strlen(buf), 0, (struct sockaddr *) &serverBAddr, sizeof(struct sockaddr_in))) == -1) {
+        perror("Error sending UDP message to Server B from AWS");
+        close(new_aws_TCP_sockfd);
+        exit(EXIT_FAILURE);
+    }
+    
+    
+    cout << "The AWS has sent path length, propagation speed and transmission speed to server B using UDP over port " << SERVERBPORT <<"." << endl;
+}
+
+void recvFromB(){
+    char propBuf[BUFLEN];
+    char transBuf[BUFLEN];
+    char totBuf[BUFLEN];
+    socklen_t serverBLen = sizeof(serverBAddr);
+    
+    memset(buf, '0', sizeof(buf));
+    
+    //receive transmission delay once
+    if ((recvLen1 = recvfrom(aws_UDP_sockfd, transBuf, BUFLEN, 0, (struct sockaddr *)&serverBAddr, &serverBLen )) < 0){
+        perror("Error receiving message from Server B");
+        close(new_aws_TCP_sockfd);
+        exit(EXIT_FAILURE);
+    }
+    transBuf[recvLen1] = '\0';
+    
+    // Exception handling
+    // if buf == -1 then too large
+    if (atoi(transBuf) == -1){
+        cerr << "Received error from Server B: File size too large\n";
+        
+        // send error to client to terminate process
+        if (send(new_aws_TCP_sockfd, "-1", strlen("-1"), 0) == -1){
+            perror("Error sending data to client");
+            close(new_aws_TCP_sockfd);
+            exit(EXIT_FAILURE);
+        }
+        
+        exit(EXIT_FAILURE);
+    }
+    
+    transDelay = atof(transBuf);
+    
+    int recvDone = 0; // 0 = not finished receiving, 1 = finished receiving
+    while (!recvDone){
+        
+        // receive propagation delay
+        if ((recvLen1 = recvfrom(aws_UDP_sockfd, propBuf, BUFLEN, 0, (struct sockaddr *) &serverBAddr, &serverBLen )) < 0){
+            perror("Error receiving message from Server B");
+            close(new_aws_TCP_sockfd);
+            exit(EXIT_FAILURE);
+        }
+        propBuf[recvLen1] = '\0';
+//        cout << "DEBUG dest: " << destBuf << endl;
+        
+        // receive min length if destination received is valid
+        if (propBuf[0] != '\0'){
+            
+            // receive total delay
+            if ((recvLen1 = recvfrom(aws_UDP_sockfd, totBuf, BUFLEN, 0, (struct sockaddr *)&serverBAddr, &serverBLen )) < 0){
+                perror("Error receiving message from Server B");
+                close(new_aws_TCP_sockfd);
+                exit(EXIT_FAILURE);
+            }
+            totBuf[recvLen1] = '\0';
+            
+            propDelay.push_back(atof(propBuf));
+            totDelay.push_back(atof(totBuf));
+           
+//            cout << "DEBUG tot: " << totBuf << endl;
+      }
+        else{
+            //toggle recvDone
+            recvDone = 1;
+        }
+    } // end while
+
+    int sizet = to_string(transDelay).length();
+    int sizep = to_string(propDelay[propDelay.size()-1]).length();
+    int sizetot = to_string(totDelay[totDelay.size()-1]).length();
+    
+    cout << "The AWS has received delays from server B:" << endl;
+//    cout << "--------------------------------------------" << endl << "Destination" << setw(sizet) << "Tt" << setw(sizep) << "Tp" << setw(sizetot) << "Delay (sec)" << endl << "--------------------------------------------" << endl;
+    cout << "-----------------------------------------------------------------------------" << endl << left << setw(20) << "Destination" << setw(20) << "Tt" << setw(20) << "Tp" << setw(20) << "Delay" << endl << "-----------------------------------------------------------------------------" << endl;
+    cout << fixed;
+    
+    
+    for(int i = 0; i < shortestPathPairs.size(); i++){
+//        cout << shortestPathPairs[i].first << setw(30) << setprecision(2) << transDelay << setw(sizep) << propDelay[i] << setw(sizetot) << totDelay[i] << endl;
+        cout << left << setw(20) << shortestPathPairs[i].first << setw(20) << setprecision(2) << transDelay << setw(20) << propDelay[i] << setw(20) <<  totDelay[i] << endl;
+    }
+
+    cout << "-----------------------------------------------------------------------------" << endl;
+    
+}
+
+void sendToClient(){
+    char transBuf [BUFLEN];
+    char destBuf [BUFLEN];
+    char lenBuf[BUFLEN];
+    char propBuf [BUFLEN];
+    char totBuf [BUFLEN];
+    
+    
+    // send transmission delay
+    sprintf(transBuf,"%f", transDelay);
+    if (send(new_aws_TCP_sockfd, transBuf, strlen(transBuf), 0) == -1){
+        perror("Error sending data to client");
+        close(new_aws_TCP_sockfd);
+        exit(EXIT_FAILURE);
+    }
+    
+    for(int i = 0; i < shortestPathPairs.size(); i++){
+        
+        // send destination node
+        for (int i = 0; i < 10000000; i++){}
+        sprintf(destBuf,"%d", shortestPathPairs[i].first);
+           if (send(new_aws_TCP_sockfd, destBuf, strlen(destBuf), 0) == -1){
+               perror("Error sending data to client");
+               close(new_aws_TCP_sockfd);
+               exit(EXIT_FAILURE);
+           }
+        // send destination length
+        for (int i = 0; i < 10000000; i++){}
+        sprintf(lenBuf,"%d", shortestPathPairs[i].second);
+           if (send(new_aws_TCP_sockfd, lenBuf, strlen(lenBuf), 0) == -1){
+               perror("Error sending data to client");
+               close(new_aws_TCP_sockfd);
+               exit(EXIT_FAILURE);
+           }
+        // send propagation delay
+        for (int i = 0; i < 10000000; i++){}
+        sprintf(propBuf,"%f", propDelay[i]);
+        if (send(new_aws_TCP_sockfd, propBuf, strlen(propBuf), 0) == -1){
+            perror("Error sending data to client");
+            close(new_aws_TCP_sockfd);
+            exit(EXIT_FAILURE);
+        }
+        // send total delay
+        for (int i = 0; i < 10000000; i++){}
+        sprintf(totBuf,"%f", totDelay[i]);
+        if (send(new_aws_TCP_sockfd, totBuf, strlen(totBuf), 0) == -1){
+            perror("Error sending data to client");
+            close(new_aws_TCP_sockfd);
+            exit(EXIT_FAILURE);
+        }
+    }
+    
+    memset(buf, '\0', sizeof(buf));
+    for (int i = 0; i < 10000000; i++){}
+    // Send NULL char to signify end of communication
+    if (send(new_aws_TCP_sockfd, buf, strlen(buf), 0) == -1){
+        perror("Error sending data to client");
+        close(new_aws_TCP_sockfd);
+        exit(EXIT_FAILURE);
+    }
+    cout << "The AWS has sent calculated delay to client using TCP over port " << TCPPORT << "." << endl;
+}
+
+int main (){
+    // initialize new port
+    init_TCP();
+    // Boot up message
+    cout << "The AWS is up and running." << endl;
+    
+    init_UDP();
+    
+    setServerAB();
+    // ********* FOR CLIENT SOCKET CONNECTION *********
+    
+//      while(1) loop for main process for AWS to send/recv to/from client, serverA, and serverB
+    while (1) {
+        // *** 4. ACCEPT CONNECTIONS ***
+        acceptFromClient();
+        // *** 5. RECEIVE DATA FROM CLIENT ***
+        recvFromClient();
+        //separateClientBuffer();
+        
+        // output message for receiving data from client
+        cout << "The AWS has received map ID " << mapID << ", start vertex " << vertexIndex << " and file size " << fileSize << " from the client using TCP over port " << TCPPORT << endl;
+        
+        //send map ID / vertex index to serverA
+        sendToA();
+        // receive shortest path data
+        recvFromA();
+        //cout << "end" << endl;
+        
+        // send prop speed, trans speed, file size, and shortest paths to serverB
+        sendToB();
+        // receive delay from server B
+        recvFromB();
+        
+        // send final result to client
+        sendToClient();
+               
+        //empty shortest path vector
+        shortestPathPairs.clear();
+        propDelay.clear();
+        totDelay.clear();
+        transDelay = 0;
+        // close client child socket
+        close(new_aws_TCP_sockfd);
+    } // end of while(1)  
+    return EXIT_SUCCESS;
+}
